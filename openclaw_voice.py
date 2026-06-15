@@ -34,6 +34,15 @@ import base64
 import json
 import logging
 import os
+
+# Work around "OMP: Error #15: Initializing libiomp5.dylib, but found
+# libiomp5.dylib already initialized" aborts on macOS, caused by numpy/torch
+# (MKL) and faster-whisper's ctranslate2 each bundling their own OpenMP
+# runtime. Must be set before numpy/torch/ctranslate2 are imported anywhere
+# in the process - those happen lazily inside providers/, so this early
+# setdefault covers it. See https://www.intel.com/content/www/us/en/developer/articles/technical/threading-openmp-conflict.html
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+
 import signal
 import sys
 import time

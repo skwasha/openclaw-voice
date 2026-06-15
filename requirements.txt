@@ -3,7 +3,12 @@
 
 # --- Core (SIP/RTP, HTTP API, config) ---
 aiohttp>=3.9.0
-numpy>=1.24.0
+# numpy<2: torch 2.2.2 (the last version with macOS x86_64/Intel wheels -
+# torch dropped Intel Mac support in 2.3+) was built against NumPy 1.x and
+# breaks under NumPy 2.x (transformers then disables PyTorch entirely,
+# breaking Kokoro's CustomAlbert). Apple Silicon Macs can use torch>=2.4 +
+# numpy>=2 instead - drop this pin if Noguchi is ARM.
+numpy>=1.24.0,<2
 webrtcvad>=2.0.10
 pyyaml>=6.0
 python-dotenv>=1.0.0
