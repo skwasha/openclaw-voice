@@ -46,6 +46,10 @@ stt:
     device: cpu
     compute_type: int8
     language: en
+    # Keep at 1: avoids ctranslate2's OpenMP thread pool contending with
+    # torch's (Kokoro TTS) MKL OpenMP runtime in the same process, which
+    # can otherwise segfault even with KMP_DUPLICATE_LIB_OK=TRUE set.
+    cpu_threads: 1
   openai:
     api_key: ${OPENAI_API_KEY}
     model: whisper-1

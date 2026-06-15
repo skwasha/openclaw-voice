@@ -27,12 +27,14 @@ class FasterWhisperSTTProvider(STTProvider):
         compute_type: str = "int8",
         language: str = "en",
         beam_size: int = 1,
+        cpu_threads: int = 1,
     ):
         self.model_name = model
         self.device = device
         self.compute_type = compute_type
         self.language = language
         self.beam_size = beam_size
+        self.cpu_threads = cpu_threads
         self._model = None
         self._lock = asyncio.Lock()
 
@@ -40,8 +42,18 @@ class FasterWhisperSTTProvider(STTProvider):
         from faster_whisper import WhisperModel
 
         logger.info(f"Loading faster-whisper model '{self.model_name}' "
-                    f"(device={self.device}, compute_type={self.compute_type})...")
-        model = WhisperModel(self.model_name, device=self.device, compute_type=self.compute_type)
+                    f"(device={self.device}, compute_type={self.compute_type}, "
+                    f"cpu_threads={self.cpu_threads})...")
+        # cpu_threads=1: ctranslate2 spawns its own OpenMP thread pool, which
+        # can otherwise contend/segfault with torch's MKL OpenMP runtime
+        # loaded by the TTS provider in the same process (see
+        # KMP_DUPLICATE_LIB_OK / OMP_NUM_THREADS notes in openclaw_voice.py).
+        model = WhisperModel(
+            self.model_name,
+            device=self.device,
+            compute_type=self.compute_type,
+            cpu_threads=self.cpu_threads,
+        )
         logger.info("faster-whisper model loaded")
         return model
 

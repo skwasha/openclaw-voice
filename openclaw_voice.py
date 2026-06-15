@@ -41,7 +41,15 @@ import os
 # runtime. Must be set before numpy/torch/ctranslate2 are imported anywhere
 # in the process - those happen lazily inside providers/, so this early
 # setdefault covers it. See https://www.intel.com/content/www/us/en/developer/articles/technical/threading-openmp-conflict.html
+#
+# KMP_DUPLICATE_LIB_OK alone just suppresses the abort - the two OpenMP
+# runtimes can still race on the same thread pool and segfault instead.
+# Pinning every relevant thread-count env var to 1 keeps each runtime
+# single-threaded so they don't fight over worker threads.
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("KMP_NUM_THREADS", "1")
 
 import signal
 import sys
