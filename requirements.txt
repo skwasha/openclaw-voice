@@ -29,6 +29,15 @@ websockets>=12.0
 # kokoro: local TTS, MIT licensed, runs on CPU
 kokoro>=0.7.0
 soundfile>=0.12.1
+# transformers<4.45: transformers 4.45+ requires torch>=2.4 (for
+# torch.nn.RMSNorm) and disables PyTorch entirely if not met, which breaks
+# Kokoro's CustomAlbert model ("CustomAlbert requires the PyTorch library
+# but it was not found"). torch 2.2.2 is the last macOS x86_64/Intel wheel,
+# so pin transformers below the floor. AlbertModel has existed in
+# transformers since its early releases, so this doesn't limit Kokoro.
+# Apple Silicon Macs can drop this (and the numpy<2 pin above) and use
+# torch>=2.4 instead.
+transformers<4.45
 # openai / elevenlabs TTS use the clients below
 
 # --- STT providers (install the ones you enable in config.yaml) ---

@@ -46,10 +46,14 @@ stt:
     device: cpu
     compute_type: int8
     language: en
-    # Keep at 1: avoids ctranslate2's OpenMP thread pool contending with
-    # torch's (Kokoro TTS) MKL OpenMP runtime in the same process, which
-    # can otherwise segfault even with KMP_DUPLICATE_LIB_OK=TRUE set.
-    cpu_threads: 1
+    # ctranslate2's intra-op thread count (independent of OMP_NUM_THREADS,
+    # which constrains torch/Kokoro). The duplicate-OpenMP segfault seen
+    # earlier happened while Kokoro and faster-whisper were loading their
+    # models concurrently (both spin up OpenMP at init); steady-state
+    # transcription is sequential in this turn-based pipeline, so a higher
+    # value here is worth trying on multi-core Macs. If you see segfaults
+    # again (especially right after startup/first call), drop this back to 1.
+    cpu_threads: 4
   openai:
     api_key: ${OPENAI_API_KEY}
     model: whisper-1
