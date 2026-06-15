@@ -1,0 +1,17 @@
+# Environment / secrets
+.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Model weights / caches (Kokoro, faster-whisper, etc.)
+models/
+*.pt
+*.bin
+*.onnx
+
+# Logs
+*.log

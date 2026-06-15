@@ -1,0 +1,32 @@
+# OpenClaw Voice Dependencies
+# Install: pip install -r requirements.txt
+
+# --- Core (SIP/RTP, HTTP API, config) ---
+aiohttp>=3.9.0
+numpy>=1.24.0
+webrtcvad>=2.0.10
+pyyaml>=6.0
+python-dotenv>=1.0.0
+aiofiles>=23.0.0
+
+# --- Anthropic engine ---
+anthropic>=0.40.0
+
+# --- xAI engine (optional, only if engine: xai) ---
+websockets>=12.0
+
+# --- TTS providers (install the ones you enable in config.yaml) ---
+# kokoro: local TTS, MIT licensed, runs on CPU
+kokoro>=0.7.0
+soundfile>=0.12.1
+# openai / elevenlabs TTS use the clients below
+
+# --- STT providers (install the ones you enable in config.yaml) ---
+# faster-whisper: local STT, runs on CPU
+faster-whisper>=1.0.0
+
+# --- OpenAI client (TTS: tts-1 / STT: whisper-1, if selected) ---
+openai>=1.40.0
+
+# NOTE: ElevenLabs TTS is called directly via aiohttp - no extra SDK needed.
+# NOTE: Audio conversion uses stdlib `audioop` (already used by audio.py).

@@ -1,0 +1,108 @@
+# OpenClaw Voice Configuration
+# SIP <-> Voice Agent Bridge (OpenClaw Plugin)
+#
+# `engine` selects the voice backend:
+#   anthropic - Claude via Messages API + pluggable STT/TTS (see `stt`/`tts` below)
+#   xai       - original xAI Grok Voice realtime WebSocket bridge
+engine: anthropic
+
+# ---------------------------------------------------------------------------
+# Anthropic engine (Claude + pluggable STT/TTS)
+# ---------------------------------------------------------------------------
+anthropic:
+  api_key: ${ANTHROPIC_API_KEY}
+  model: claude-sonnet-4-6
+  max_tokens: 1024
+  greeting: "Hello, this is OpenClaw. How can I help you?"
+
+# Text-to-Speech provider used by the Anthropic engine.
+# Options: kokoro (local, free) | openai | elevenlabs | mock
+tts:
+  provider: kokoro
+  kokoro:
+    model: kokoro-v1.0
+    voice: af_heart      # see Kokoro voice list for alternatives
+    lang_code: a         # 'a' = American English
+    device: cpu
+    speed: 1.0
+  openai:
+    api_key: ${OPENAI_API_KEY}
+    model: tts-1
+    voice: nova
+  elevenlabs:
+    api_key: ${ELEVENLABS_API_KEY}
+    voice_id: ${ELEVENLABS_VOICE_ID}
+    model_id: eleven_turbo_v2_5
+    output_format: pcm_24000
+  mock:
+    tone_hz: 0           # 0 = silence, e.g. 440 for an audible test tone
+
+# Speech-to-Text provider used by the Anthropic engine.
+# Options: faster_whisper (local, free) | openai | mock
+stt:
+  provider: faster_whisper
+  faster_whisper:
+    model: base.en
+    device: cpu
+    compute_type: int8
+    language: en
+  openai:
+    api_key: ${OPENAI_API_KEY}
+    model: whisper-1
+    language: en
+  mock:
+    fixed_text: "Hello, this is a test."
+
+# ---------------------------------------------------------------------------
+# xAI engine (original realtime voice bridge, kept for reference/fallback)
+# ---------------------------------------------------------------------------
+xai:
+  api_key: ${XAI_API_KEY}
+  voice: "Rex"  # Options: Rex, Ara, Sal, Eve, Leo
+  instructions: |
+    You are a helpful voice assistant.
+    Keep responses brief and conversational - you're talking on a phone.
+
+# ---------------------------------------------------------------------------
+# SIP (VoIP.ms)
+# ---------------------------------------------------------------------------
+# In the VoIP.ms portal:
+#   1. Create a SIP sub-account (Sub Accounts -> Create Sub Account)
+#   2. Note your nearest POP server hostname (e.g. la.voip.ms, chicago.voip.ms)
+#   3. Manage DIDs -> set routing for your DID to "SIP/IAX" -> this sub-account
+sip:
+  server: "la.voip.ms"        # your nearest VoIP.ms POP server
+  port: 5060
+  extension: "100000_voice"   # your VoIP.ms sub-account username
+  password: ${SIP_PASSWORD}
+  display_name: "OpenClaw"
+  rtp_port: 40000
+
+# Audio settings
+# PCMU (G.711 u-law) @ 8kHz is what VoIP.ms sends/receives - no conversion
+# needed on the SIP side. STT/TTS providers resample internally as needed.
+audio:
+  format: "pcmu"
+  sample_rate: 8000
+  frame_ms: 20
+
+# Daemon settings
+daemon:
+  api_port: 8079
+  max_concurrent_calls: 3
+
+# OpenClaw Gateway integration
+openclaw:
+  gateway_port: 18789
+  gateway_token: ${OPENCLAW_GATEWAY_TOKEN}
+  session_key: "openclaw-voice"
+
+# Authentication
+auth:
+  pin: ${OPENCLAW_AUTH_PIN}
+  whitelist: []  # caller numbers that skip PIN (e.g. ["+15551234567"])
+
+# Logging
+logging:
+  level: "INFO"
+  record_calls: false
