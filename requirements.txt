@@ -9,6 +9,11 @@ pyyaml>=6.0
 python-dotenv>=1.0.0
 aiofiles>=23.0.0
 
+# pkg_resources - not installed by default in newer Python/pip venvs, but
+# required at import time by some TTS/STT deps (e.g. Kokoro's torch/
+# transformers stack)
+setuptools>=65
+
 # --- Anthropic engine ---
 anthropic>=0.40.0
 

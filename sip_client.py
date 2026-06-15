@@ -1531,7 +1531,7 @@ class SIPClient:
             await call_handler(rtp_session, negotiated_codec, call_id)
 
         except Exception as e:
-            logger.error(f"Error handling INVITE: {e}")
+            logger.exception(f"Error handling INVITE: {e}")
             # Clean up per-call state on error
             if 'call_id' in dir() and call_id in self._active_calls:
                 cs = self._active_calls.pop(call_id)
