@@ -24,7 +24,16 @@ class RTPSession:
 
     def __init__(self, local_port: int = 0):
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.socket.bind(('0.0.0.0', local_port))
+        try:
+            self.socket.bind(('0.0.0.0', local_port))
+        except OSError as e:
+            if local_port == 0:
+                raise
+            # Requested port unavailable - fall back to an OS-assigned
+            # ephemeral port rather than failing the call outright. This
+            # port won't be covered by any static port-forwarding rule.
+            logger.warning(f"RTP port {local_port} unavailable ({e}); falling back to OS-assigned port")
+            self.socket.bind(('0.0.0.0', 0))
         self.local_port = self.socket.getsockname()[1]
         self.remote_addr = None
         self.remote_port = None
@@ -198,8 +207,11 @@ class SIPClient:
         self.sip_port = int(config.get('sip_local_port', 5060))
         self.external_ip = config.get('external_ip', '')
 
-        # RTP port range
+        # RTP port pool - fixed range so it can be statically port-forwarded
+        # through NAT (each concurrent call gets one port from this range).
         self.rtp_port_start = int(config.get('rtp_port', 40000))
+        self.rtp_port_count = int(config.get('rtp_port_count', 10))
+        self._rtp_ports_in_use: set = set()
 
         logger.info(f"SIP Client initialized:")
         logger.info(f"  Server: {self.server}:{self.port}")
@@ -740,7 +752,7 @@ class SIPClient:
             contact_uri = f"sip:{self.extension}@{self.external_ip or self.local_ip}:{self.contact_port}"
 
             # Create RTP session first so SDP has the correct port (per-call)
-            rtp_session = RTPSession()
+            rtp_session = self._new_rtp_session()
             self.rtp_session = rtp_session  # backwards compat
 
             # Build SDP for audio offer using the actual RTP port
@@ -1004,7 +1016,7 @@ class SIPClient:
         # If no RTP port provided, create a session to get one
         if rtp_port == 0:
             if not self.rtp_session:
-                self.rtp_session = RTPSession()
+                self.rtp_session = self._new_rtp_session()
             rtp_port = self.rtp_session.local_port
 
         # Offer PCMU (0) first since xAI uses u-law natively, then G.722 as fallback
@@ -1240,7 +1252,7 @@ class SIPClient:
             # Clean up per-call state
             call_state = self._active_calls.pop(call_id, None)
             if call_state and call_state.get('rtp_session'):
-                call_state['rtp_session'].close()
+                self._close_rtp_session(call_state['rtp_session'])
 
             # Legacy cleanup
             if self.active_call == call_id:
@@ -1252,8 +1264,56 @@ class SIPClient:
     def _cleanup_rtp(self):
         """Close RTP session if open (used on call failure paths)."""
         if self.rtp_session:
-            self.rtp_session.close()
+            self._close_rtp_session(self.rtp_session)
             self.rtp_session = None
+
+    # ------------------------------------------------------------------
+    # RTP port pool
+    #
+    # RTPSession previously always bound to port 0 (OS-assigned ephemeral
+    # port), which makes NAT port-forwarding impossible since the port is
+    # different and unpredictable every call. Instead, hand out ports from
+    # a small fixed range (sip.rtp_port .. sip.rtp_port + rtp_port_count-1)
+    # that can be forwarded once in the router.
+    # ------------------------------------------------------------------
+
+    def _allocate_rtp_port(self) -> int:
+        """Allocate a free RTP port from the configured pool.
+
+        Falls back to an OS-assigned ephemeral port (0) if the pool is
+        exhausted - that call's audio just won't be reachable through a
+        static port-forwarding rule.
+        """
+        for offset in range(self.rtp_port_count):
+            port = self.rtp_port_start + offset
+            if port not in self._rtp_ports_in_use:
+                self._rtp_ports_in_use.add(port)
+                return port
+        logger.warning(
+            f"RTP port pool ({self.rtp_port_start}-{self.rtp_port_start + self.rtp_port_count - 1}) "
+            f"exhausted; falling back to an OS-assigned port (not covered by port forwarding)"
+        )
+        return 0
+
+    def _release_rtp_port(self, port: int):
+        """Return a port to the RTP pool."""
+        self._rtp_ports_in_use.discard(port)
+
+    def _new_rtp_session(self) -> 'RTPSession':
+        """Create an RTPSession bound to a port from the configured pool."""
+        port = self._allocate_rtp_port()
+        session = RTPSession(port)
+        if port and session.local_port != port:
+            # RTPSession fell back to an OS-assigned port (bind failed)
+            self._release_rtp_port(port)
+        return session
+
+    def _close_rtp_session(self, rtp_session: Optional['RTPSession']):
+        """Close an RTPSession and return its port to the pool."""
+        if rtp_session is None:
+            return
+        self._release_rtp_port(rtp_session.local_port)
+        rtp_session.close()
 
     def _ack_non2xx(self, to_uri, from_uri, from_tag, call_id, cseq, branch, response_text, addr):
         """ACK a non-2xx final response (same transaction, same branch per RFC 3261 §17.1.1.3)."""
@@ -1371,7 +1431,7 @@ class SIPClient:
             logger.info(f"Incoming call codec: {codec_name} (payload type {negotiated_codec})")
 
             # Create RTP session (per-call, not instance-level)
-            rtp_session = RTPSession()
+            rtp_session = self._new_rtp_session()
             rtp_session.set_remote(rtp_ip, rtp_port)
 
             # Send 100 Trying
@@ -1476,7 +1536,7 @@ class SIPClient:
             if 'call_id' in dir() and call_id in self._active_calls:
                 cs = self._active_calls.pop(call_id)
                 if cs.get('rtp_session'):
-                    cs['rtp_session'].close()
+                    self._close_rtp_session(cs['rtp_session'])
 
     def _build_200_ok(self, call_id: str, from_header: str, to_header: str, via_header: str, cseq_header: str, rtp_session: Optional[RTPSession] = None) -> str:
         """Build 200 OK response for INVITE"""
@@ -1491,7 +1551,7 @@ class SIPClient:
         # Use provided per-call RTP session, fall back to instance
         rtp = rtp_session or self.rtp_session
         if not rtp:
-            rtp = RTPSession()
+            rtp = self._new_rtp_session()
             self.rtp_session = rtp
 
         ts = int(datetime.now().timestamp())
@@ -1582,7 +1642,7 @@ class SIPClient:
         except Exception as e:
             logger.error(f"Error sending BYE: {e}")
 
-        rtp.close()
+        self._close_rtp_session(rtp)
 
         # Clean up per-call state
         self._active_calls.pop(cid, None)

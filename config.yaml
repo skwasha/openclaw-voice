@@ -76,7 +76,13 @@ sip:
   extension: "100000_voice"   # your VoIP.ms sub-account username
   password: ${SIP_PASSWORD}
   display_name: "OpenClaw"
+  # external_ip: set to your public IP (or DDNS hostname) when running
+  # behind NAT, so Contact/SDP advertise an address VoIP.ms can reach.
+  # external_ip: "203.0.113.10"
+  # RTP ports are allocated from a fixed pool [rtp_port, rtp_port + rtp_port_count)
+  # so the range can be statically port-forwarded through NAT.
   rtp_port: 40000
+  rtp_port_count: 10
 
 # Audio settings
 # PCMU (G.711 u-law) @ 8kHz is what VoIP.ms sends/receives - no conversion

@@ -448,7 +448,9 @@ class OpenClawVoice:
         logger.info(f"Inbound call {call_id[:16]} from {remote}")
 
         # Check if auth is configured
+        # (YAML may parse a numeric PIN from .env substitution as an int)
         auth_pin = self.config.get('auth', {}).get('pin', '')
+        auth_pin = '' if auth_pin is None else str(auth_pin)
         has_auth = bool(auth_pin and not auth_pin.startswith('${'))
 
         # Auto-authenticate whitelisted callers or if no PIN configured
@@ -681,6 +683,7 @@ class OpenClawVoice:
         if name == "authenticate":
             pin = args.get("pin", "").strip()
             expected = self.config.get('auth', {}).get('pin', '')
+            expected = '' if expected is None else str(expected)
             if not expected or expected.startswith('${'):
                 # No PIN configured, auto-pass
                 session.authenticated = True
