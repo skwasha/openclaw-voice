@@ -27,8 +27,11 @@ def create_tts_provider(config: dict) -> TTSProvider:
     provider = (tts_cfg.get("provider") or "mock").lower()
 
     if provider == "kokoro":
-        from .tts_kokoro import KokoroTTSProvider
-        return KokoroTTSProvider(**tts_cfg.get("kokoro", {}))
+        from .worker_process import ProcessTTSAdapter
+        return ProcessTTSAdapter(
+            "providers.tts_kokoro", "KokoroTTSProvider",
+            **tts_cfg.get("kokoro", {}),
+        )
     elif provider == "openai":
         from .tts_openai import OpenAITTSProvider
         return OpenAITTSProvider(**tts_cfg.get("openai", {}))
@@ -52,8 +55,11 @@ def create_stt_provider(config: dict) -> STTProvider:
     provider = (stt_cfg.get("provider") or "mock").lower()
 
     if provider in ("faster_whisper", "faster-whisper", "whisper_local"):
-        from .stt_faster_whisper import FasterWhisperSTTProvider
-        return FasterWhisperSTTProvider(**stt_cfg.get("faster_whisper", {}))
+        from .worker_process import ProcessSTTAdapter
+        return ProcessSTTAdapter(
+            "providers.stt_faster_whisper", "FasterWhisperSTTProvider",
+            **stt_cfg.get("faster_whisper", {}),
+        )
     elif provider == "openai":
         from .stt_openai import OpenAISTTProvider
         return OpenAISTTProvider(**stt_cfg.get("openai", {}))
