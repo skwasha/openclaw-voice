@@ -6,6 +6,15 @@
 #   xai       - original xAI Grok Voice realtime WebSocket bridge
 engine: anthropic
 
+# Name the assistant introduces itself as (used in system instructions + greeting).
+assistant_name: "${ASSISTANT_NAME}"
+
+# Personality / familiarity level.  Options:
+#   professional  - efficient, no small talk, purely business
+#   friendly      - warm and personable (default)
+#   casual        - relaxed and informal, like a close friend
+personality: "${PERSONALITY}"
+
 # ---------------------------------------------------------------------------
 # Anthropic engine (Claude + pluggable STT/TTS)
 # ---------------------------------------------------------------------------
@@ -13,7 +22,7 @@ anthropic:
   api_key: ${ANTHROPIC_API_KEY}
   model: claude-sonnet-4-6
   max_tokens: 1024
-  greeting: "Hello, this is OpenClaw. How can I help you?"
+  greeting: "Hello, this is ${ASSISTANT_NAME}. How can I help you?"
 
 # Text-to-Speech provider used by the Anthropic engine.
 # Options: kokoro (local, free) | openai | elevenlabs | mock

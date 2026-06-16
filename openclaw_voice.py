@@ -96,6 +96,7 @@ def load_config() -> dict:
         'ELEVENLABS_API_KEY', 'ELEVENLABS_VOICE_ID',
         'SIP_SERVER', 'SIP_EXTENSION', 'SIP_PASSWORD', 'SIP_EXTERNAL_IP',
         'OPENCLAW_GATEWAY_TOKEN', 'OPENCLAW_AUTH_PIN',
+        'ASSISTANT_NAME', 'PERSONALITY',
     ]:
         placeholder = f'${{{key}}}'
         if placeholder in config_str:
@@ -188,8 +189,25 @@ TOOLS_AUTHENTICATED = [
     },
 ]
 
+# Personality addendums injected into {personality_block} in each template.
+# 'friendly' is the default — no extra instruction, the base prompts already
+# produce a warm, conversational tone.
+PERSONALITY_BLOCKS = {
+    'professional': (
+        "\n\nPERSONALITY: Be efficient and professional. Skip small talk — answer "
+        "questions directly and get to the point. Polite but brief. No jokes, no "
+        "banter. Treat every call like a business call."
+    ),
+    'friendly': '',
+    'casual': (
+        "\n\nPERSONALITY: Be warm and casual, like talking to a close friend. Use "
+        "informal language and contractions naturally. Light humor and banter are "
+        "welcome. Never sound corporate or stiff — keep it relaxed and genuine."
+    ),
+}
+
 INBOUND_UNAUTH_INSTRUCTIONS = """\
-You are OpenClaw, a helpful voice assistant. The user is calling you on the phone.
+You are {name}, a helpful voice assistant. The user is calling you on the phone.
 
 The caller has NOT been authenticated yet. You can have a basic conversation, but \
 you CANNOT use any tools until they provide their PIN.
@@ -198,10 +216,10 @@ Ask the caller for their PIN code to unlock full capabilities. When they give yo
 a PIN, use the authenticate tool to verify it. Be friendly but firm — do not try \
 to answer questions that would require tools until authenticated.
 
-STYLE: Be natural, conversational, and concise. You're on a phone call."""
+STYLE: Be natural, conversational, and concise. You're on a phone call.{personality_block}"""
 
 INBOUND_AUTH_INSTRUCTIONS = """\
-You are OpenClaw, a helpful voice assistant. The user is calling you on the phone.
+You are {name}, a helpful voice assistant. The user is calling you on the phone.
 
 CAPABILITIES:
 - Answer questions, have conversations
@@ -209,7 +227,7 @@ CAPABILITIES:
 - Make outbound calls on the user's behalf via schedule_outbound_call
 - Bridge calls together via connect_to_call
 
-STYLE: Be natural, conversational, and concise. You're on a phone call.
+STYLE: Be natural, conversational, and concise. You're on a phone call.{personality_block}
 
 IMPORTANT: When you need to use a tool, ALWAYS say something first like "let me check \
 on that", "one sec", or "hang on, let me look that up" BEFORE calling the tool. Tools \
@@ -221,16 +239,16 @@ When the user asks you to call someone, use schedule_outbound_call with their nu
 and a description of what to do on the call."""
 
 OUTBOUND_TEMPLATE = """\
-You are OpenClaw, making a phone call on behalf of your user.
+You are {name}, making a phone call on behalf of your user.
 
 YOUR TASK: {task}
 
 RULES:
-- Identify yourself as OpenClaw, a voice assistant calling on behalf of your user
+- Identify yourself as {name}, a voice assistant calling on behalf of your user
 - Stay focused on the task
 - Be polite and professional
 - Confirm outcomes before hanging up
-- Say goodbye when done"""
+- Say goodbye when done{personality_block}"""
 
 
 # ---------------------------------------------------------------------------
@@ -492,10 +510,12 @@ class OpenClawVoice:
             authenticated=pre_authenticated,
         )
 
+        name = self.config.get('assistant_name', 'OpenClaw')
+        personality_block = PERSONALITY_BLOCKS.get(self.config.get('personality', 'friendly'), '')
         if pre_authenticated:
-            instructions = INBOUND_AUTH_INSTRUCTIONS
+            instructions = INBOUND_AUTH_INSTRUCTIONS.format(name=name, personality_block=personality_block)
         else:
-            instructions = INBOUND_UNAUTH_INSTRUCTIONS
+            instructions = INBOUND_UNAUTH_INSTRUCTIONS.format(name=name, personality_block=personality_block)
 
         session.task_context = instructions
 
@@ -510,7 +530,9 @@ class OpenClawVoice:
 
     async def make_outbound_call(self, number: str, task: str) -> Optional[str]:
         """Initiate an outbound call. Returns call_id or None on failure."""
-        instructions = OUTBOUND_TEMPLATE.format(task=task)
+        name = self.config.get('assistant_name', 'OpenClaw')
+        personality_block = PERSONALITY_BLOCKS.get(self.config.get('personality', 'friendly'), '')
+        instructions = OUTBOUND_TEMPLATE.format(name=name, task=task, personality_block=personality_block)
         call_id_holder = {}
 
         async def outbound_handler(rtp_session: RTPSession, codec: int, call_id: str):
@@ -722,7 +744,10 @@ class OpenClawVoice:
                 # Reconfigure the voice session with full tools and instructions
                 if session.bridge:
                     await session.bridge.update_session(
-                        instructions=INBOUND_AUTH_INSTRUCTIONS,
+                        instructions=INBOUND_AUTH_INSTRUCTIONS.format(
+                            name=self.config.get('assistant_name', 'OpenClaw'),
+                            personality_block=PERSONALITY_BLOCKS.get(self.config.get('personality', 'friendly'), ''),
+                        ),
                         tools=TOOLS_AUTHENTICATED,
                     )
                 return "PIN accepted! You now have full access. How can I help you?"
