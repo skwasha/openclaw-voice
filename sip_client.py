@@ -205,7 +205,9 @@ class SIPClient:
 
         # SIP signaling port - must match Contact header for incoming INVITEs
         self.sip_port = int(config.get('sip_local_port', 5060))
-        self.external_ip = config.get('external_ip', '')
+        _ext = config.get('external_ip', '') or ''
+        # Treat unresolved placeholder (SIP_EXTERNAL_IP not set in .env) as absent
+        self.external_ip = '' if str(_ext).startswith('${') else str(_ext)
 
         # RTP port pool - fixed range so it can be statically port-forwarded
         # through NAT (each concurrent call gets one port from this range).
