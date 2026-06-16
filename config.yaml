@@ -77,14 +77,14 @@ xai:
 #   2. Note your nearest POP server hostname (e.g. la.voip.ms, chicago.voip.ms)
 #   3. Manage DIDs -> set routing for your DID to "SIP/IAX" -> this sub-account
 sip:
-  server: ${SIP_SERVER}        # your nearest VoIP.ms POP server
+  server: "${SIP_SERVER}"        # your nearest VoIP.ms POP server
   port: 5060
-  extension: ${SIP_EXTENSION}  # your VoIP.ms sub-account username
-  password: ${SIP_PASSWORD}
+  extension: "${SIP_EXTENSION}"  # your VoIP.ms sub-account username
+  password: "${SIP_PASSWORD}"
   display_name: "OpenClaw"
   # Set to your public IP or DDNS hostname when running behind NAT so
   # Contact/SDP advertise an address VoIP.ms can reach.
-  external_ip: ${SIP_EXTERNAL_IP}
+  external_ip: "${SIP_EXTERNAL_IP}"
   # RTP ports are allocated from a fixed pool [rtp_port, rtp_port + rtp_port_count)
   # so the range can be statically port-forwarded through NAT.
   rtp_port: 40000
