@@ -451,11 +451,17 @@ class OpenClawVoice:
         whitelist = self.config.get('auth', {}).get('whitelist', [])
         if not whitelist:
             return False
-        # Normalize: strip spaces, compare with/without leading +
-        normalized = number.replace(' ', '').replace('-', '')
+        # Strip formatting, then compare bare digits (no leading +/1).
+        # VoIP.ms delivers numbers without country code (e.g. "2136310879")
+        # while whitelist entries are typically E.164 ("+12136310879"), so we
+        # compare the trailing 10 digits to handle the mismatch.
+        def norm(n):
+            return n.replace(' ', '').replace('-', '').lstrip('+').lstrip('1') \
+                   if len(n.replace(' ', '').replace('-', '').lstrip('+')) > 10 \
+                   else n.replace(' ', '').replace('-', '').lstrip('+')
+        n = norm(number)
         for entry in whitelist:
-            entry_norm = entry.replace(' ', '').replace('-', '')
-            if normalized == entry_norm or normalized.lstrip('+') == entry_norm.lstrip('+'):
+            if n == norm(entry):
                 return True
         return False
 
