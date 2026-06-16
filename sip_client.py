@@ -80,8 +80,11 @@ class RTPSession:
             bytes_sent = self.socket.sendto(packet, (self.remote_addr, self.remote_port))
             if self.sequence % 50 == 0:  # Log every 50th packet (1 second)
                 logger.debug(f"RTP #{self.sequence}: sent {bytes_sent} bytes to {self.remote_addr}:{self.remote_port}, ts={self.timestamp}")
-        except Exception as e:
-            logger.error(f"Failed to send RTP packet: {e}")
+        except OSError:
+            # Re-raise so the caller (xai_to_sip) can break its send loop.
+            # Logging here would spam the log for every frame in the outbound
+            # queue after a call ends and the socket is closed.
+            raise
 
         self.sequence += 1
         # Timestamp increment depends on codec:

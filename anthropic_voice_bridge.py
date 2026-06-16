@@ -30,6 +30,7 @@ AUDIO PIPELINE (turn-based, VAD-segmented):
 import asyncio
 import json
 import logging
+import re
 import time
 import uuid
 from typing import Any, Callable, Dict, List, Optional
@@ -48,6 +49,41 @@ from providers.stt_base import STTProvider
 from providers.tts_base import TTSProvider
 
 logger = logging.getLogger(__name__)
+
+# Emoji / symbol ranges Kokoro (and most TTS) can't pronounce.
+_STRIP_RE = re.compile(
+    "["
+    "\U0001F300-\U0001F9FF"  # misc symbols, pictographs, emoticons, transport
+    "\U00002600-\U000027BF"  # misc symbols, dingbats
+    "\U0001FA00-\U0001FA9F"  # chess, medical, etc.
+    "‍"                 # zero-width joiner
+    "]+",
+    flags=re.UNICODE,
+)
+
+# Sentence splitter: only break on ! and ? — these are unambiguous sentence
+# boundaries in conversational text.  We intentionally leave "." alone to
+# avoid false splits on abbreviations ("Dr.", "Mr.", "e.g.", URLs, etc.)
+# which are common in Claude responses.  Splitting on just !? is strictly
+# better than no splitting: single-sentence replies are unchanged, and any
+# response with ! or ? gets streamed sentence-by-sentence.
+_SENT_SPLIT_RE = re.compile(r'(?<=[!?])\s+')
+
+
+def _split_sentences(text: str) -> list:
+    """
+    Split `text` into streaming-TTS chunks on ! and ? boundaries.
+
+    Falls back to the whole text as a single chunk if there are no splits.
+    """
+    parts = [s.strip() for s in _SENT_SPLIT_RE.split(text) if s.strip()]
+    return parts if parts else [text.strip()]
+
+
+def _clean_for_tts(text: str) -> str:
+    """Strip emoji/symbols and normalise whitespace before sending to TTS."""
+    return _STRIP_RE.sub('', text).strip()
+
 
 # VAD-based turn segmentation tuning
 SILENCE_FRAMES_THRESHOLD = 25   # 25 * 20ms = 500ms of silence ends an utterance
@@ -272,18 +308,35 @@ class AnthropicVoiceBridge:
             self._turn_processing = False
 
     async def _speak(self, text: str):
-        """Synthesize `text` and enqueue it as RTP frames for playback."""
-        try:
-            self.is_speaking = True
-            ulaw_audio = await self.tts.synthesize(text)
-            if not ulaw_audio:
-                self.is_speaking = False
-                return
-            for frame in split_into_rtp_frames(ulaw_audio):
-                await self.outbound_queue.put(frame)
-        except Exception as e:
-            logger.error(f"TTS error: {e}")
-            self.is_speaking = False
+        """
+        Synthesize `text` sentence-by-sentence and stream to the outbound
+        queue.
+
+        Splitting into sentences lets playback start on the first sentence
+        while subsequent sentences are still being synthesized, cutting
+        perceived latency significantly for multi-sentence replies.
+        """
+        text = _clean_for_tts(text)
+        if not text:
+            return
+
+        self.is_speaking = True
+        sentences = _split_sentences(text)
+
+        for sentence in sentences:
+            if not self.running:
+                break
+            sentence = _clean_for_tts(sentence)
+            if not sentence:
+                continue
+            try:
+                ulaw_audio = await self.tts.synthesize(sentence)
+                if ulaw_audio:
+                    for frame in split_into_rtp_frames(ulaw_audio):
+                        await self.outbound_queue.put(frame)
+            except Exception as e:
+                logger.error(f"TTS error ({sentence!r:.40}): {e}")
+                # Continue with remaining sentences rather than going silent.
 
     async def _call_anthropic(self, user_text: str) -> str:
         """Send `user_text` to Claude, resolving any tool_use turns, and
