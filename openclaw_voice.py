@@ -94,7 +94,8 @@ def load_config() -> dict:
     for key in [
         'XAI_API_KEY', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY',
         'ELEVENLABS_API_KEY', 'ELEVENLABS_VOICE_ID',
-        'SIP_PASSWORD', 'OPENCLAW_GATEWAY_TOKEN', 'OPENCLAW_AUTH_PIN',
+        'SIP_SERVER', 'SIP_EXTENSION', 'SIP_PASSWORD', 'SIP_EXTERNAL_IP',
+        'OPENCLAW_GATEWAY_TOKEN', 'OPENCLAW_AUTH_PIN',
     ]:
         placeholder = f'${{{key}}}'
         if placeholder in config_str:
