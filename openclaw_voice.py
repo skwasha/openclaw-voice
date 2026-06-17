@@ -62,6 +62,7 @@ from typing import Any, Optional
 
 import yaml
 import aiohttp
+from user_memory import load_memory
 from aiohttp import web
 from dotenv import load_dotenv
 
@@ -96,7 +97,7 @@ def load_config() -> dict:
         'ELEVENLABS_API_KEY', 'ELEVENLABS_VOICE_ID',
         'SIP_SERVER', 'SIP_EXTENSION', 'SIP_PASSWORD', 'SIP_EXTERNAL_IP',
         'OPENCLAW_GATEWAY_TOKEN', 'OPENCLAW_AUTH_PIN',
-        'ASSISTANT_NAME', 'PERSONALITY',
+        'ASSISTANT_NAME', 'PERSONALITY', 'KATIE_MEMORY_DIR',
     ]:
         placeholder = f'${{{key}}}'
         if placeholder in config_str:
@@ -187,6 +188,25 @@ TOOLS_AUTHENTICATED = [
             "required": ["call_id"]
         }
     },
+    {
+        "type": "function",
+        "name": "update_memory",
+        "description": (
+            "Save a fact or note to remember about this caller for future calls. "
+            "Use when the caller explicitly asks you to remember something, or when "
+            "you learn an important fact that shouldn't be forgotten."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "fact": {
+                    "type": "string",
+                    "description": "The fact or note to remember, in clear prose."
+                }
+            },
+            "required": ["fact"]
+        }
+    },
 ]
 
 # Personality addendums injected into {personality_block} in each template.
@@ -270,6 +290,8 @@ class CallSession:
     authenticated: bool = False
     # Conference: when set, outbound RTP audio is also forwarded to this session
     conference_peer: Optional['CallSession'] = None
+    # Persistent caller memory (loaded from disk at call start)
+    memory: Optional[Any] = None
 
 
 # ---------------------------------------------------------------------------
@@ -500,6 +522,13 @@ class OpenClawVoice:
         if pre_authenticated and has_auth:
             logger.info(f"Caller {remote} is whitelisted, skipping PIN")
 
+        # Load persistent memory for this caller
+        memory = load_memory(remote, self.config)
+        if memory.exists():
+            logger.info(f"Loaded memory for {remote}")
+        else:
+            logger.info(f"No prior memory for {remote}")
+
         session = CallSession(
             call_id=call_id,
             direction='inbound',
@@ -508,14 +537,17 @@ class OpenClawVoice:
             rtp_session=rtp_session,
             codec=negotiated_codec,
             authenticated=pre_authenticated,
+            memory=memory,
         )
 
         name = self.config.get('assistant_name', 'OpenClaw')
         personality_block = PERSONALITY_BLOCKS.get(self.config.get('personality', 'friendly'), '')
+        memory_block = memory.to_system_block()
         if pre_authenticated:
             instructions = INBOUND_AUTH_INSTRUCTIONS.format(name=name, personality_block=personality_block)
         else:
             instructions = INBOUND_UNAUTH_INSTRUCTIONS.format(name=name, personality_block=personality_block)
+        instructions += memory_block
 
         session.task_context = instructions
 
@@ -718,6 +750,24 @@ class OpenClawVoice:
         if session.task and not session.task.done():
             session.task.cancel()
 
+        # Trigger background memory update from conversation transcript
+        if session.memory and session.bridge and hasattr(session.bridge, 'messages'):
+            messages = list(session.bridge.messages)
+            api_key = self.config.get('anthropic', {}).get('api_key', '') or \
+                      self.config.get('xai', {}).get('api_key', '')
+            assistant_name = self.config.get('assistant_name', 'Katie')
+            if messages and api_key and not str(api_key).startswith('${'):
+                asyncio.create_task(
+                    session.memory.write_call_summary(
+                        messages, api_key,
+                        caller_number=session.remote_number,
+                        assistant_name=assistant_name,
+                    )
+                )
+            else:
+                # No API key or empty call — at least flush any mid-call notes
+                session.memory.flush_notes()
+
         self.call_manager.remove(session.call_id)
 
     # ---- Tool execution --------------------------------------------------
@@ -743,11 +793,14 @@ class OpenClawVoice:
                 logger.info(f"Caller {session.remote_number} authenticated on {session.call_id[:16]}")
                 # Reconfigure the voice session with full tools and instructions
                 if session.bridge:
+                    _name = self.config.get('assistant_name', 'OpenClaw')
+                    _pb = PERSONALITY_BLOCKS.get(self.config.get('personality', 'friendly'), '')
+                    _mem = session.memory.to_system_block() if session.memory else ''
                     await session.bridge.update_session(
                         instructions=INBOUND_AUTH_INSTRUCTIONS.format(
-                            name=self.config.get('assistant_name', 'OpenClaw'),
-                            personality_block=PERSONALITY_BLOCKS.get(self.config.get('personality', 'friendly'), ''),
-                        ),
+                            name=_name,
+                            personality_block=_pb,
+                        ) + _mem,
                         tools=TOOLS_AUTHENTICATED,
                     )
                 return "PIN accepted! You now have full access. How can I help you?"
@@ -780,6 +833,15 @@ class OpenClawVoice:
             session.conference_peer = target
             target.conference_peer = session
             return "Connected! You can now hear the other call. I'm bridging audio between both parties."
+
+        elif name == "update_memory":
+            fact = args.get("fact", "").strip()
+            if not fact:
+                return "No fact provided."
+            if session.memory:
+                session.memory.append_note(fact)
+                return "Got it, I'll remember that."
+            return "Memory not available for this session."
 
         return f"Unknown tool: {name}"
 

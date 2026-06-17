@@ -15,3 +15,6 @@ models/
 
 # Logs
 *.log
+
+# Persistent caller memory (personal data — keep local, don't commit)
+user_memory/

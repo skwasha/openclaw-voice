@@ -123,6 +123,16 @@ auth:
   pin: ${OPENCLAW_AUTH_PIN}
   whitelist: []  # caller numbers that skip PIN (e.g. ["+15551234567"])
 
+# Persistent memory
+# katie_dir: path to Katie's shared memory directory (the same one text-chat
+#   Katie reads from). Set KATIE_MEMORY_DIR in .env. When set, voice Katie
+#   reads MEMORY.md / USER.md / daily logs on connect and appends a
+#   "## Voice Call — HH:MM TZ" summary block to today's daily log on hangup.
+# dir: fallback per-caller profile files when katie_dir is not set.
+memory:
+  katie_dir: "${KATIE_MEMORY_DIR}"
+  dir: user_memory
+
 # Logging
 logging:
   level: "INFO"
