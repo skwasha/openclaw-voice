@@ -496,6 +496,7 @@ class OpenClawVoice:
         # while whitelist entries are typically E.164 ("+12136310879"), so we
         # compare the trailing 10 digits to handle the mismatch.
         def norm(n):
+            n = str(n)  # guard against YAML parsing unquoted numbers as int
             return n.replace(' ', '').replace('-', '').lstrip('+').lstrip('1') \
                    if len(n.replace(' ', '').replace('-', '').lstrip('+')) > 10 \
                    else n.replace(' ', '').replace('-', '').lstrip('+')
