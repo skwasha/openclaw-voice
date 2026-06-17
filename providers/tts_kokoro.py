@@ -47,7 +47,7 @@ class KokoroTTSProvider(TTSProvider):
         from kokoro import KPipeline
 
         logger.info(f"Loading Kokoro pipeline (lang_code={self.lang_code}, device={self.device})...")
-        pipeline = KPipeline(lang_code=self.lang_code, device=self.device)
+        pipeline = KPipeline(lang_code=self.lang_code, device=self.device, repo_id='hexgrad/Kokoro-82M')
         logger.info("Kokoro pipeline loaded")
         return pipeline
 

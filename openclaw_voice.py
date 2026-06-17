@@ -97,7 +97,7 @@ def load_config() -> dict:
         'ELEVENLABS_API_KEY', 'ELEVENLABS_VOICE_ID',
         'SIP_SERVER', 'SIP_EXTENSION', 'SIP_PASSWORD', 'SIP_EXTERNAL_IP',
         'OPENCLAW_GATEWAY_TOKEN', 'OPENCLAW_AUTH_PIN',
-        'ASSISTANT_NAME', 'PERSONALITY', 'KATIE_MEMORY_DIR',
+        'ASSISTANT_NAME', 'PERSONALITY', 'AGENT_MEMORY_DIR', 'OWNER_NAME',
     ]:
         placeholder = f'${{{key}}}'
         if placeholder in config_str:
@@ -209,6 +209,29 @@ TOOLS_AUTHENTICATED = [
     },
 ]
 
+TOOL_LEAVE_MESSAGE = {
+    "type": "function",
+    "name": "leave_message",
+    "description": (
+        "Save a message from the caller to the owner's daily log. "
+        "Call this once you have the caller's name (if given) and their message."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "caller_name": {
+                "type": "string",
+                "description": "The caller's name, if they gave one. Empty string if unknown."
+            },
+            "message": {
+                "type": "string",
+                "description": "The full message to pass along."
+            }
+        },
+        "required": ["message"]
+    }
+}
+
 # Personality addendums injected into {personality_block} in each template.
 # 'friendly' is the default — no extra instruction, the base prompts already
 # produce a warm, conversational tone.
@@ -237,6 +260,35 @@ a PIN, use the authenticate tool to verify it. Be friendly but firm — do not t
 to answer questions that would require tools until authenticated.
 
 STYLE: Be natural, conversational, and concise. You're on a phone call.{personality_block}"""
+
+INBOUND_FRIEND_INSTRUCTIONS = """\
+You are {name}, a voice assistant for {owner_name}.
+
+The caller is {caller_name}. They can have a conversation and leave messages for {owner_name}, \
+but do not have access to OpenClaw tools by default.
+
+STYLE: Be warm and professional. You're on a phone call.{personality_block}
+
+If they'd like to leave a message, use the leave_message tool.
+If they want full access to tools, they can authenticate with a PIN using the authenticate tool."""
+
+INBOUND_TAKEMESSAGE_INSTRUCTIONS = """\
+You are {name}, a voice assistant for {owner_name}.
+
+This caller is not in {owner_name}'s contact list. {owner_name} is not available right now.
+
+YOUR JOB:
+1. Introduce yourself as {owner_name}'s assistant
+2. Ask if you can take a message
+3. Get their name and message (keep it brief)
+4. Call leave_message to save it
+5. Thank them and end the call politely
+
+RULES:
+- Do not reveal personal information about {owner_name}
+- Do not offer to connect them, call back, or provide contact details
+- Keep it short and professional — this is not a conversation, it's message-taking
+STYLE: Polite, efficient, professional."""
 
 INBOUND_AUTH_INSTRUCTIONS = """\
 You are {name}, a helpful voice assistant. The user is calling you on the phone.
@@ -486,6 +538,28 @@ class OpenClawVoice:
 
     # ---- Inbound call handling -------------------------------------------
 
+    def _identify_caller(self, number: str) -> dict:
+        """
+        Return {'name': str, 'tier': str} for an inbound number.
+
+        Checks the `callers` table first, then falls back to the legacy
+        `auth.whitelist` (treated as owner tier for backward compatibility).
+        Unrecognised numbers return tier 'unknown'.
+        """
+        from user_memory import _norm_number
+        norm = _norm_number(number)
+        callers = self.config.get('callers', {})
+        for raw, info in callers.items():
+            if _norm_number(str(raw)) == norm:
+                return {
+                    'name': info.get('name', ''),
+                    'tier': info.get('tier', 'friend'),
+                }
+        # Legacy whitelist → owner tier
+        if self._is_whitelisted(number):
+            return {'name': '', 'tier': 'owner'}
+        return {'name': '', 'tier': 'unknown'}
+
     def _is_whitelisted(self, number: str) -> bool:
         """Check if a caller number is in the auth whitelist."""
         whitelist = self.config.get('auth', {}).get('whitelist', [])
@@ -512,24 +586,90 @@ class OpenClawVoice:
         remote = call_state.get('remote_number', 'unknown')
         logger.info(f"Inbound call {call_id[:16]} from {remote}")
 
-        # Check if auth is configured
-        # (YAML may parse a numeric PIN from .env substitution as an int)
-        auth_pin = self.config.get('auth', {}).get('pin', '')
-        auth_pin = '' if auth_pin is None else str(auth_pin)
-        has_auth = bool(auth_pin and not auth_pin.startswith('${'))
+        # Identify caller and determine tier
+        caller = self._identify_caller(remote)
+        tier = caller['tier']
+        caller_name = caller['name'] or remote
+        logger.info(f"Caller {remote} identified as tier={tier!r} name={caller['name']!r}")
 
-        # Auto-authenticate whitelisted callers or if no PIN configured
-        pre_authenticated = not has_auth or self._is_whitelisted(remote)
-        if pre_authenticated and has_auth:
-            logger.info(f"Caller {remote} is whitelisted, skipping PIN")
+        name        = self.config.get('assistant_name', 'OpenClaw')
+        owner_name  = self.config.get('owner_name', name)
+        personality_block = PERSONALITY_BLOCKS.get(self.config.get('personality', 'friendly'), '')
+        tier_cfg    = self.config.get('caller_tiers', {}).get(tier, {})
 
-        # Load persistent memory for this caller
-        memory = load_memory(remote, self.config)
-        if memory.exists():
+        # ---- Memory -------------------------------------------------------
+        # Only inject shared agent memory for owner tier; others get per-caller
+        # profiles (or nothing for unknown) so personal context stays private.
+        if tier == 'owner':
+            memory = load_memory(remote, self.config)
+        elif tier == 'friend':
+            from user_memory import CallerMemory
+            memory = CallerMemory(remote, memory_dir=Path(
+                self.config.get('memory', {}).get('dir', 'user_memory')
+            ))
+        else:
+            memory = None   # unknown callers: no memory injection
+
+        if memory and memory.exists():
             logger.info(f"Loaded memory for {remote}")
         else:
             logger.info(f"No prior memory for {remote}")
 
+        # ---- Auth / tools -------------------------------------------------
+        if tier == 'owner':
+            pre_authenticated = True
+            initial_tools = TOOLS_AUTHENTICATED
+        elif tier == 'unknown':
+            pre_authenticated = False
+            initial_tools = [TOOL_LEAVE_MESSAGE]
+        else:  # friend
+            auth_pin = str(self.config.get('auth', {}).get('pin', '') or '')
+            has_auth = bool(auth_pin and not auth_pin.startswith('${'))
+            pre_authenticated = not has_auth
+            initial_tools = [TOOL_AUTHENTICATE, TOOL_LEAVE_MESSAGE]
+
+        # ---- Greeting -----------------------------------------------------
+        raw_greeting = tier_cfg.get('greeting', '')
+        if not raw_greeting:
+            if tier == 'owner':
+                raw_greeting = "Hey {caller_name}!" if caller['name'] else "Hey!"
+            elif tier == 'friend':
+                raw_greeting = (
+                    "Hi {caller_name}, this is {name}, {owner_name}'s assistant. "
+                    "How can I help you?"
+                )
+            else:
+                raw_greeting = (
+                    "Hi, you've reached {name}, {owner_name}'s assistant. "
+                    "{owner_name} isn't available right now — can I take a message?"
+                )
+        greeting = raw_greeting.format(
+            name=name, owner_name=owner_name,
+            caller_name=caller['name'] or 'there',
+        )
+
+        # ---- Instructions -------------------------------------------------
+        memory_block = memory.to_system_block() if memory else ''
+        if tier == 'owner':
+            if pre_authenticated:
+                instructions = INBOUND_AUTH_INSTRUCTIONS.format(
+                    name=name, personality_block=personality_block)
+            else:
+                instructions = INBOUND_UNAUTH_INSTRUCTIONS.format(
+                    name=name, personality_block=personality_block)
+        elif tier == 'friend':
+            instructions = INBOUND_FRIEND_INSTRUCTIONS.format(
+                name=name, owner_name=owner_name,
+                caller_name=caller['name'] or 'the caller',
+                personality_block=personality_block,
+            )
+        else:
+            instructions = INBOUND_TAKEMESSAGE_INSTRUCTIONS.format(
+                name=name, owner_name=owner_name,
+            )
+        instructions += memory_block
+
+        # ---- Session ------------------------------------------------------
         session = CallSession(
             call_id=call_id,
             direction='inbound',
@@ -540,16 +680,6 @@ class OpenClawVoice:
             authenticated=pre_authenticated,
             memory=memory,
         )
-
-        name = self.config.get('assistant_name', 'OpenClaw')
-        personality_block = PERSONALITY_BLOCKS.get(self.config.get('personality', 'friendly'), '')
-        memory_block = memory.to_system_block()
-        if pre_authenticated:
-            instructions = INBOUND_AUTH_INSTRUCTIONS.format(name=name, personality_block=personality_block)
-        else:
-            instructions = INBOUND_UNAUTH_INSTRUCTIONS.format(name=name, personality_block=personality_block)
-        instructions += memory_block
-
         session.task_context = instructions
 
         if not self.call_manager.add(session):
@@ -557,7 +687,8 @@ class OpenClawVoice:
             await self.sip_client.hangup(call_id=call_id)
             return
 
-        await self._run_call(session, instructions, is_inbound=True)
+        await self._run_call(session, instructions, is_inbound=True,
+                             initial_tools=initial_tools, greeting=greeting)
 
     # ---- Outbound call handling ------------------------------------------
 
@@ -609,17 +740,19 @@ class OpenClawVoice:
 
     # ---- Core call bridge ------------------------------------------------
 
-    async def _run_call(self, session: CallSession, instructions: str, is_inbound: bool):
+    async def _run_call(self, session: CallSession, instructions: str, is_inbound: bool,
+                        initial_tools: Optional[list] = None, greeting: Optional[str] = None):
         """Run the audio bridge between SIP and xAI for one call."""
-        # Pick tools based on auth state
-        if not is_inbound:
+        if initial_tools is not None:
+            tools = initial_tools
+        elif not is_inbound:
             tools = []
         elif session.authenticated:
             tools = TOOLS_AUTHENTICATED
         else:
             tools = [TOOL_AUTHENTICATE]
 
-        bridge = create_bridge(self.config, instructions, tools)
+        bridge = create_bridge(self.config, instructions, tools, greeting=greeting)
 
         # Set up tool handler for inbound calls
         if is_inbound:
@@ -843,6 +976,24 @@ class OpenClawVoice:
                 session.memory.append_note(fact)
                 return "Got it, I'll remember that."
             return "Memory not available for this session."
+
+        elif name == "leave_message":
+            message = args.get("message", "").strip()
+            caller_name = args.get("caller_name", "").strip()
+            if not message:
+                return "No message provided."
+            agent_dir = self.config.get('memory', {}).get('agent_dir', '')
+            if agent_dir and not str(agent_dir).startswith('${'):
+                from user_memory import AgentMemory
+                from datetime import datetime
+                mem = AgentMemory(Path(agent_dir))
+                timestamp = datetime.now().strftime("%H:%M %Z").strip()
+                label = caller_name if caller_name else session.remote_number
+                block = f"\n\n## Message from {label} — {timestamp}\n{message}\n"
+                mem._append_to_daily(block)
+                logger.info(f"Message from {label} saved to daily log")
+                return "Message saved. I'll make sure they get it."
+            return "Message noted, but I couldn't save it — memory directory not configured."
 
         return f"Unknown tool: {name}"
 

@@ -9,11 +9,44 @@ engine: anthropic
 # Name the assistant introduces itself as (used in system instructions + greeting).
 assistant_name: "${ASSISTANT_NAME}"
 
+# Name used in greetings when talking to non-owner callers ("Hi, I'm Katie,
+# {owner_name}'s assistant..."). Defaults to assistant_name if not set.
+owner_name: "${OWNER_NAME}"
+
 # Personality / familiarity level.  Options:
 #   professional  - efficient, no small talk, purely business
 #   friendly      - warm and personable (default)
 #   casual        - relaxed and informal, like a close friend
 personality: "${PERSONALITY}"
+
+# ---------------------------------------------------------------------------
+# Caller identity table
+# Maps normalized phone numbers to a name and tier.
+# Tiers: owner | friend | unknown (default for anyone not listed)
+# ---------------------------------------------------------------------------
+callers: {}
+# Example:
+#   "2136310879":
+#     name: Sascha
+#     tier: owner
+#   "3238434355":
+#     name: Sascha
+#     tier: owner
+#   "8596085443":
+#     name: Mom
+#     tier: friend
+
+# Per-tier policy and default greetings.
+# Greeting supports {name}, {owner_name}, {caller_name} placeholders.
+caller_tiers:
+  owner:
+    # memory: agent (full shared memory, set via AGENT_MEMORY_DIR)
+    greeting: ""   # empty = auto: "Hey {caller_name}!" or "Hey!" if no name
+  friend:
+    greeting: ""   # empty = auto: formal intro with name if known
+  unknown:
+    action: message   # take a message and save to daily log
+    greeting: ""      # empty = auto: formal intro + offer to take a message
 
 # ---------------------------------------------------------------------------
 # Anthropic engine (Claude + pluggable STT/TTS)
@@ -130,7 +163,7 @@ auth:
 #   "## Voice Call — HH:MM TZ" summary block to today's daily log on hangup.
 # dir: fallback per-caller profile files when katie_dir is not set.
 memory:
-  katie_dir: "${KATIE_MEMORY_DIR}"
+  agent_dir: "${AGENT_MEMORY_DIR}"
   dir: user_memory
 
 # Logging

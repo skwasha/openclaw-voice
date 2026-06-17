@@ -70,12 +70,15 @@ def create_stt_provider(config: dict) -> STTProvider:
         return MockSTTProvider()
 
 
-def create_bridge(config: dict, instructions: str, tools: list):
+def create_bridge(config: dict, instructions: str, tools: list, greeting: str = None):
     """Build the voice bridge selected by `config["engine"]` (anthropic | xai).
 
     Returns an object implementing the bridge interface consumed by
     `openclaw_voice.py`'s `_run_call` (connect/disconnect/send_audio/
     receive_audio/is_speaking/running/_listen_task/on_tool_call/outbound_queue).
+
+    `greeting` overrides the config-level greeting when provided (used for
+    per-caller dynamic greetings).
     """
     engine = (config.get("engine") or "xai").lower()
 
@@ -94,7 +97,10 @@ def create_bridge(config: dict, instructions: str, tools: list):
             tools=tools,
             max_tokens=anth_cfg.get("max_tokens", 1024),
         )
-        if "greeting" in anth_cfg:
+        # Per-caller greeting takes priority; fall back to config-level greeting
+        if greeting is not None:
+            kwargs["greeting"] = greeting
+        elif "greeting" in anth_cfg:
             kwargs["greeting"] = anth_cfg["greeting"]
         return AnthropicVoiceBridge(**kwargs)
 

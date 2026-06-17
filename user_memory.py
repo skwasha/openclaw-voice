@@ -41,14 +41,14 @@ _EXTRACTION_MODEL = "claude-haiku-4-5-20251001"
 # Katie's shared memory (reads from /Users/sascha/clawd)
 # ---------------------------------------------------------------------------
 
-class KatieMemory:
+class AgentMemory:
     """
     Reads Katie's canonical memory files and writes call summaries back
     so every channel (voice, text, WhatsApp, etc.) shares the same context.
     """
 
-    def __init__(self, katie_dir: Path):
-        self.katie_dir = Path(katie_dir)
+    def __init__(self, agent_dir: Path):
+        self.agent_dir = Path(agent_dir)
         self._memory_md: str = ""
         self._user_md: str = ""
         self._daily: dict[str, str] = {}   # iso-date -> content
@@ -61,10 +61,10 @@ class KatieMemory:
 
     def load(self):
         """Load all relevant memory files from disk."""
-        self._memory_md = self._read(self.katie_dir / "MEMORY.md")
-        self._user_md   = self._read(self.katie_dir / "USER.md")
+        self._memory_md = self._read(self.agent_dir / "MEMORY.md")
+        self._user_md   = self._read(self.agent_dir / "USER.md")
 
-        daily_dir = self.katie_dir / "memory"
+        daily_dir = self.agent_dir / "memory"
         today     = date.today()
         yesterday = today - timedelta(days=1)
         for d in (today, yesterday):
@@ -78,7 +78,7 @@ class KatieMemory:
             len(self._daily),
         ])
         logger.info(
-            f"KatieMemory loaded from {self.katie_dir}: "
+            f"AgentMemory loaded from {self.agent_dir}: "
             f"MEMORY.md={'yes' if self._memory_md else 'no'}, "
             f"USER.md={'yes' if self._user_md else 'no'}, "
             f"daily logs={len(self._daily)}"
@@ -234,7 +234,7 @@ Return ONLY the bullet points, nothing else."""
     def _append_to_daily(self, block: str):
         """Append `block` to today's daily log, creating the file if needed."""
         today_iso = date.today().isoformat()
-        daily_dir = self.katie_dir / "memory"
+        daily_dir = self.agent_dir / "memory"
         daily_dir.mkdir(parents=True, exist_ok=True)
         log_path = daily_dir / f"{today_iso}.md"
         with open(log_path, "a", encoding="utf-8") as f:
@@ -362,13 +362,13 @@ def load_memory(number: str, config: dict):
     """
     Return the appropriate memory object for this caller.
 
-    If memory.katie_dir is configured (points at /Users/sascha/clawd or similar),
-    use KatieMemory — reads shared MEMORY.md / USER.md / daily logs.
+    If memory.agent_dir is configured (points at /Users/sascha/clawd or similar),
+    use AgentMemory — reads shared MEMORY.md / USER.md / daily logs.
     Otherwise fall back to per-caller CallerMemory files.
     """
-    katie_dir = config.get('memory', {}).get('katie_dir', '')
-    if katie_dir and not str(katie_dir).startswith('${'):
-        return KatieMemory(Path(katie_dir))
+    agent_dir = config.get('memory', {}).get('agent_dir', '')
+    if agent_dir and not str(agent_dir).startswith('${'):
+        return AgentMemory(Path(agent_dir))
 
     fallback_dir = Path(config.get('memory', {}).get('dir', 'user_memory'))
     return CallerMemory(number, memory_dir=fallback_dir)
