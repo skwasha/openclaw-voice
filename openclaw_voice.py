@@ -63,6 +63,7 @@ from typing import Any, Optional
 import yaml
 import aiohttp
 from user_memory import load_memory
+from sms_bridge import send_sms
 from aiohttp import web
 from dotenv import load_dotenv
 
@@ -98,6 +99,7 @@ def load_config() -> dict:
         'SIP_SERVER', 'SIP_EXTENSION', 'SIP_PASSWORD', 'SIP_EXTERNAL_IP',
         'OPENCLAW_GATEWAY_TOKEN', 'OPENCLAW_AUTH_PIN',
         'ASSISTANT_NAME', 'PERSONALITY', 'AGENT_MEMORY_DIR', 'OWNER_NAME',
+        'VOIPMS_API_USERNAME', 'VOIPMS_API_PASSWORD', 'VOIPMS_DID', 'SMS_WEBHOOK_SECRET',
     ]:
         placeholder = f'${{{key}}}'
         if placeholder in config_str:
@@ -186,6 +188,28 @@ TOOLS_AUTHENTICATED = [
                 }
             },
             "required": ["call_id"]
+        }
+    },
+    {
+        "type": "function",
+        "name": "send_sms",
+        "description": (
+            "Send a text message (SMS) to a phone number on behalf of the owner. "
+            "Use when the owner asks you to text someone."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "to": {
+                    "type": "string",
+                    "description": "Destination phone number"
+                },
+                "message": {
+                    "type": "string",
+                    "description": "The text message to send"
+                }
+            },
+            "required": ["to", "message"]
         }
     },
     {
@@ -460,6 +484,7 @@ class OpenClawVoice:
         self.running = False
         self._app: Optional[web.Application] = None
         self._runner: Optional[web.AppRunner] = None
+        self._sms_runner: Optional[web.AppRunner] = None
 
     # ---- Lifecycle --------------------------------------------------------
 
@@ -496,6 +521,10 @@ class OpenClawVoice:
             await self._start_api()
             logger.info(f"HTTP API listening on 127.0.0.1:{self.api_port}")
 
+        # Start public SMS webhook (separate from the internal control API —
+        # this one needs to be reachable from VoIP.ms's servers)
+        await self._start_sms_webhook()
+
         # Listen for inbound calls (blocks until stopped)
         try:
             await self.sip_client.listen_for_calls(self._on_inbound_call)
@@ -520,6 +549,10 @@ class OpenClawVoice:
         # Stop HTTP API
         if self._runner:
             await self._runner.cleanup()
+
+        # Stop SMS webhook
+        if self._sms_runner:
+            await self._sms_runner.cleanup()
 
         # Close shared HTTP session
         global _http_session
@@ -968,6 +1001,16 @@ class OpenClawVoice:
             target.conference_peer = session
             return "Connected! You can now hear the other call. I'm bridging audio between both parties."
 
+        elif name == "send_sms":
+            to = args.get("to", "").strip()
+            msg = args.get("message", "").strip()
+            if not to or not msg:
+                return "I need both a phone number and a message."
+            result = await send_sms(self.config, to, msg)
+            if result.get("status") == "success":
+                return f"Text sent to {to}."
+            return f"Failed to send text: {result.get('status', 'unknown error')}"
+
         elif name == "update_memory":
             fact = args.get("fact", "").strip()
             if not fact:
@@ -1015,6 +1058,165 @@ class OpenClawVoice:
 
         self._app = app
         self._runner = runner
+
+    # ---- SMS (VoIP.ms) ----------------------------------------------------
+
+    async def _start_sms_webhook(self):
+        """
+        Start a separate, public-facing listener for VoIP.ms's SMS URL
+        Callback. Unlike the internal control API (127.0.0.1-only above),
+        this must be reachable from VoIP.ms's servers — it binds 0.0.0.0 on
+        its own port. Port-forward this port the same way you did for
+        SIP/RTP, and point the VoIP.ms portal's SMS/MMS URL Callback at:
+
+            http://<external_ip>:<webhook_port>/sms/inbound?to={TO}&from={FROM}&message={MESSAGE}&id={ID}&date={TIMESTAMP}&api_key=<webhook_secret>
+
+        No-ops if sms.enabled is not true in config.
+        """
+        sms_cfg = self.config.get('sms', {})
+        if not sms_cfg.get('enabled'):
+            logger.info("SMS disabled (sms.enabled=false), skipping webhook listener")
+            return
+
+        port = sms_cfg.get('webhook_port', 8082)
+        app = web.Application()
+        app.router.add_get('/sms/inbound', self._api_sms_inbound)
+
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, '0.0.0.0', port)
+        await site.start()
+
+        self._sms_runner = runner
+        logger.info(f"SMS webhook listening on 0.0.0.0:{port}/sms/inbound")
+
+    async def _api_sms_inbound(self, request: web.Request) -> web.Response:
+        """
+        VoIP.ms SMS URL Callback handler.
+
+        VoIP.ms sends a GET with `to`, `from`, `message`, `files`/`media`,
+        `id`, `date`, and (per our own callback URL template) `api_key`.
+        We ack with "ok" immediately — VoIP.ms retries every 30 minutes if it
+        doesn't see that exact response body, and an LLM round trip is way
+        too slow to risk a duplicate-send retry — then process the message
+        in the background.
+        """
+        params = request.query
+        sms_cfg = self.config.get('sms', {})
+        secret = str(sms_cfg.get('webhook_secret', '') or '')
+        if secret and not secret.startswith('${'):
+            if params.get('api_key', '') != secret:
+                logger.warning(f"SMS webhook: bad/missing api_key from {request.remote}")
+                return web.Response(text="forbidden", status=403)
+
+        sender = params.get('from', '')
+        message = params.get('message', '')
+        msg_id = params.get('id', '')
+        if not sender or not message:
+            logger.warning(f"SMS webhook: missing from/message params: {dict(params)}")
+            return web.Response(text="ok")  # still ack so VoIP.ms doesn't retry garbage
+
+        logger.info(f"Inbound SMS from {sender} (id={msg_id}): {message[:80]!r}")
+        asyncio.create_task(self._handle_inbound_sms(sender, message))
+        return web.Response(text="ok")
+
+    async def _handle_inbound_sms(self, sender: str, message: str):
+        """
+        Route an inbound SMS by caller tier (same table voice calls use),
+        generate a reply, send it back, and log the exchange to the shared
+        daily log so it shows up alongside voice calls and messages.
+        """
+        caller = self._identify_caller(sender)
+        tier = caller['tier']
+        caller_name = caller['name'] or sender
+        name = self.config.get('assistant_name', 'OpenClaw')
+        owner_name = self.config.get('owner_name', name)
+        reply = ""
+
+        try:
+            if tier == 'owner':
+                # Full OpenClaw capability — texting the owner's own assistant
+                # is treated like any other request, same path as process_query.
+                reply = await run_openclaw_query(message, self.config, timeout=45)
+            elif tier == 'friend':
+                reply = await self._lightweight_sms_reply(
+                    message, caller_name, owner_name, name,
+                    extra_instructions=(
+                        f"The sender is a known contact of {owner_name}'s. You can chat "
+                        f"and take messages for {owner_name}, but you do not have access "
+                        f"to any tools or {owner_name}'s personal data."
+                    ),
+                )
+            else:
+                reply = await self._lightweight_sms_reply(
+                    message, caller_name, owner_name, name,
+                    extra_instructions=(
+                        f"This is an unknown number texting {owner_name}'s phone. "
+                        f"Politely acknowledge their message and say you'll pass it along "
+                        f"to {owner_name}. Do not reveal any personal information about "
+                        f"{owner_name}, and do not continue a long conversation."
+                    ),
+                )
+        except Exception as e:
+            logger.error(f"Inbound SMS handling error: {e}")
+
+        if reply:
+            await send_sms(self.config, sender, reply)
+
+        # Log every inbound SMS to the shared daily log, regardless of tier,
+        # so Sascha sees all SMS activity in one place alongside calls/messages.
+        agent_dir = self.config.get('memory', {}).get('agent_dir', '')
+        if agent_dir and not str(agent_dir).startswith('${'):
+            from user_memory import AgentMemory
+            from datetime import datetime
+            mem = AgentMemory(Path(agent_dir))
+            timestamp = datetime.now().strftime("%H:%M %Z").strip()
+            block = (
+                f"\n\n## SMS — {timestamp}\n"
+                f"From {caller_name} ({sender}): {message}\n"
+                + (f"Reply: {reply}\n" if reply else "")
+            )
+            mem._append_to_daily(block)
+
+    async def _lightweight_sms_reply(
+        self, message: str, caller_name: str, owner_name: str,
+        assistant_name: str, extra_instructions: str,
+    ) -> str:
+        """
+        Single-turn Claude reply for friend/unknown-tier SMS senders.
+        Does not go through the OpenClaw gateway — no tools, no personal
+        memory, just a short, polite text reply.
+        """
+        api_key = self.config.get('anthropic', {}).get('api_key', '')
+        if not api_key or str(api_key).startswith('${'):
+            logger.warning("No Anthropic API key configured, cannot generate SMS reply")
+            return ""
+
+        personality_block = PERSONALITY_BLOCKS.get(self.config.get('personality', 'friendly'), '')
+        system = (
+            f"You are {assistant_name}, {owner_name}'s assistant, replying to a text "
+            f"message from {caller_name}.\n\n{extra_instructions}\n\n"
+            f"STYLE: Keep it short — this is a text message, not a phone call. "
+            f"One or two sentences.{personality_block}"
+        )
+
+        from anthropic import AsyncAnthropic
+        client = AsyncAnthropic(api_key=api_key)
+        try:
+            response = await client.messages.create(
+                model=self.config.get('anthropic', {}).get('model', 'claude-sonnet-4-6'),
+                max_tokens=200,
+                system=system,
+                messages=[{"role": "user", "content": message}],
+            )
+            return "".join(
+                b.text for b in response.content if getattr(b, "type", "") == "text"
+            ).strip()
+        except Exception as e:
+            logger.error(f"SMS reply generation error: {e}")
+            return ""
+        finally:
+            await client.close()
 
     async def _api_make_call(self, request: web.Request) -> web.Response:
         try:

@@ -1,7 +1,7 @@
 """
 Katie's shared memory integration for OpenClaw Voice.
 
-At call start, reads three sources from KATIE_MEMORY_DIR
+At call start, reads three sources from AGENT_MEMORY_DIR
 (default: /Users/sascha/clawd):
 
     MEMORY.md          — long-term curated memory (most important)
@@ -20,7 +20,7 @@ and appends a dated block to today's daily log:
 This is the exact file text-chat Katie reads at session start, so the
 next text session will see what was discussed on the call.
 
-If KATIE_MEMORY_DIR is not configured, falls back to per-caller markdown
+If AGENT_MEMORY_DIR is not configured, falls back to per-caller markdown
 files under memory_dir/  (simple caller-profile mode, no daily log).
 """
 
@@ -253,7 +253,7 @@ Return ONLY the bullet points, nothing else."""
 
 
 # ---------------------------------------------------------------------------
-# Fallback: per-caller profile files (no KATIE_MEMORY_DIR)
+# Fallback: per-caller profile files (no AGENT_MEMORY_DIR)
 # ---------------------------------------------------------------------------
 
 def _norm_number(number: str) -> str:
@@ -266,7 +266,7 @@ def _norm_number(number: str) -> str:
 class CallerMemory:
     """
     Simple per-caller markdown profiles under memory_dir/{number}.md.
-    Used when KATIE_MEMORY_DIR is not configured.
+    Used when AGENT_MEMORY_DIR is not configured.
     Updated via Claude Haiku after each call.
     """
 

@@ -157,14 +157,40 @@ auth:
   whitelist: []  # caller numbers that skip PIN (e.g. ["+15551234567"])
 
 # Persistent memory
-# katie_dir: path to Katie's shared memory directory (the same one text-chat
-#   Katie reads from). Set KATIE_MEMORY_DIR in .env. When set, voice Katie
-#   reads MEMORY.md / USER.md / daily logs on connect and appends a
-#   "## Voice Call — HH:MM TZ" summary block to today's daily log on hangup.
-# dir: fallback per-caller profile files when katie_dir is not set.
+# agent_dir: path to the agent's shared memory directory (the same one
+#   text-chat Katie reads from). Set AGENT_MEMORY_DIR in .env. When set,
+#   voice Katie reads MEMORY.md / USER.md / daily logs on connect and
+#   appends a "## Voice Call — HH:MM TZ" summary block to today's daily log
+#   on hangup (and "## SMS — HH:MM TZ" for texts).
+# dir: fallback per-caller profile files when agent_dir is not set.
 memory:
   agent_dir: "${AGENT_MEMORY_DIR}"
   dir: user_memory
+
+# ---------------------------------------------------------------------------
+# SMS (VoIP.ms)
+# ---------------------------------------------------------------------------
+# Outbound: REST call to voip.ms/api/v1/rest.php (method=sendSMS).
+# Inbound:  VoIP.ms portal -> DID Numbers -> Manage DIDs -> (your DID) ->
+#   pencil icon -> Short Message Service section -> check "Enable SMS/MMS"
+#   and "SMS/MMS URL Callback", then set the callback URL to:
+#
+#     http://<external_ip>:<webhook_port>/sms/inbound?to={TO}&from={FROM}&message={MESSAGE}&id={ID}&date={TIMESTAMP}&api_key=<webhook_secret>
+#
+#   webhook_secret is a random string YOU generate (e.g. `openssl rand -hex 32`)
+#   — VoIP.ms just echoes it back verbatim from the URL template above, it's
+#   how we verify the request came from your own callback config and not a
+#   random GET to the port. It is not issued by VoIP.ms.
+#
+#   webhook_port binds 0.0.0.0 (unlike the internal control API, which is
+#   127.0.0.1-only) — port-forward it the same way you did for SIP/RTP.
+sms:
+  enabled: false
+  api_username: "${VOIPMS_API_USERNAME}"  # email/login for the VoIP.ms portal
+  api_password: "${VOIPMS_API_PASSWORD}"  # Main Menu -> SOAP/REST API -> API Security
+  did: "${VOIPMS_DID}"                    # the DID to send/receive from, e.g. 3238744644
+  webhook_port: 8082
+  webhook_secret: "${SMS_WEBHOOK_SECRET}"
 
 # Logging
 logging:
