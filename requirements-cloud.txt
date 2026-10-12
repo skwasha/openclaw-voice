@@ -1,0 +1,27 @@
+# Cloud-only dependency set — works on Python 3.13+ (tested on 3.14, Intel macOS).
+#
+# Covers engine: xai, plus the cloud TTS/STT providers (elevenlabs, openai) and
+# the mock providers. Does NOT include the local providers (kokoro,
+# faster_whisper): those pull in PyTorch, which has no Intel-Mac build past
+# Python 3.12. Use requirements.txt on Python <=3.12 if you need them.
+#
+#   python3 -m venv .venv
+#   .venv/bin/pip install -r requirements-cloud.txt
+
+# Core daemon
+aiohttp>=3.9.0
+python-dotenv>=1.0.0
+pyyaml>=6.0
+aiofiles>=23.0.0
+
+# Audio — audioop was removed from the stdlib in Python 3.13; this restores it
+audioop-lts>=0.2.1; python_version >= "3.13"
+webrtcvad>=2.0.10
+setuptools>=65,<81  # webrtcvad still imports pkg_resources, removed in setuptools 81
+numpy>=1.24.0
+soundfile>=0.12.1
+
+# Engines / providers
+websockets>=12.0     # engine: xai
+anthropic>=0.40.0    # engine: anthropic, memory summarisation
+openai>=1.40.0       # tts/stt provider: openai
